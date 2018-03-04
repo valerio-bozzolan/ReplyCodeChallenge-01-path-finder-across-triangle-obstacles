@@ -1,511 +1,909 @@
 <!DOCTYPE html>
 <html>
 <head>
-	<meta charset="UTF-8" />
-	<title>Path finder across simple obscacles</title>
-	<style>
-		svg .obstacle {
-			fill: yellow;
-			fill-opacity:0.5;
-			stroke: black;
-			stroke-width: 5;
-		}
-		svg .platform {
-			fill: blue;
-			stroke: black;
-			stroke-width: 5;
-		}
-		svg .warn-fill {
-			fill: orange;
-		}
-		svg .warn-stroke {
-			stroke: red;
-			stroke-width: 15;
-		}
-		svg .path-finder {
-			stroke: blue;
-			stroke-width:10;
-		}
-	</style>
+<meta charset="UTF-8" />
+<title>Path finder across simple obscacles</title>
+<style>
+	#controls {
+		position: fixed;
+	}
+	svg .obstacle {
+		fill: yellow;
+		fill-opacity:0.5;
+		stroke: black;
+		stroke-width: 5;
+	}
+	svg .platform {
+		fill: blue;
+		stroke: black;
+		stroke-width: 5;
+	}
+	svg .warn-fill {
+		fill: orange;
+	}
+	svg .warn-stroke {
+		stroke: red;
+		stroke-width: 15;
+	}
+	svg .info {
+		stroke: green;
+		fill: green;
+	}
+	svg .path-finder {
+		stroke: blue;
+		stroke-width:10;
+	}
+</style>
 </head>
 <body>
 <h1>Path finder across simple obscacles</h1>
+<div id="controls">
+	<p>
+		<button id="run">run</button>
+		<button id="step">single step</button>
+		<button id="pause">toggle pause</button>
+	</p>
+	<p>
+		<textarea id="input"></textarea>
+		<textarea id="output"></textarea>
+	</p>
+</div>
 <div id="container">
 	<svg id="canvas"></svg>
 </div>
-<div>
-	<h2>Data</h2>
-	<textarea></textarea>
-</div>
 <script src="d3/d3.min.js"></script>
-<script src="d3-polygon/d3-polygon.min.js"></script>
 <script>
-var Data = {};
+"use strict";
 
-setTimeout( function () {
+var Data = {
 	/**
-	 * Create a new point from two coordinates
-	 *
-	 * @param x float
-	 * @param y float
+	 * Remove duplicate obstacles
 	 */
-	function Point ( x, y ) {
-		this.x = x;
-		this.y = y;
-	};
+	removeDuplicateObstacles: function () {
+		var uniques = [];
+		var obstacles = this.obstacles;
+		for( var i = 0; i < obstacles.length - 1; i++ ) {
+			var found = false;
+			for( var j = i + 1; j < obstacles.length; j++ ) {
+				if( obstacles[ j ].containsTriangle( obstacles[ i ] ) ) {
+					found = true;
+					break;
+				}
+			}
+			if( ! found ) {
+				uniques.push( obstacles[ i ] );
+			}
+		}
+		this.obstacles = uniques;
+	}
+};
 
-	/**
-	 * Is this point the same of another point?
-	 *
- 	 * @param p {Point}
-	 * @return {bool}
-	 */
-	Point.prototype.equals = function ( p ) {
-		return this.x === p.x
-		    && this.y === p.y;
-	};
+/**
+ * Create a new point from two coordinates
+ *
+ * @param x float
+ * @param y float
+ */
+function Point ( x, y ) {
+	this.x = x;
+	this.y = y;
+};
 
-	/**
-	 * Create a new point from two string coordinates
-	 *
-	 * @param x string
-	 * @param y string
-	 * @return Point
-	 */
-	Point.createFromString = function ( x, y ) {
-		return new Point(
-			parseFloat( x ),
-			parseFloat( y )
+/**
+ * Is this point the same of another point?
+ *
+ * @param p {Point}
+ * @return {bool}
+ */
+Point.prototype.equals = function ( p ) {
+	return this.x === p.x
+	    && this.y === p.y;
+};
+
+/**
+ * Create a new point from two string coordinates
+ *
+ * @param x string
+ * @param y string
+ * @return Point
+ */
+Point.createFromString = function ( x, y ) {
+	return new Point(
+		parseFloat( x ),
+		parseFloat( y )
+	);
+};
+
+/**
+ * Get the distance from this point and another
+ *
+ * @param p {Point}
+ * @return {float}
+ */
+Point.prototype.distanceFrom = function ( p ) {
+	var a = this.x - p.x;
+	var b = this.y - p.y;
+	return Math.sqrt( a * a + b * b );
+};
+
+/**
+ * Create a new segment from two points
+ *
+ * @param a {Point}
+ * @param b {Point}
+ */
+function Segment ( a, b ) {
+	this.a = a;
+	this.b = b;
+};
+
+/**
+ * SVG points attribute
+ *
+ * @return {string}
+ */
+Segment.prototype.getSVGPoints = function () {
+	return '' + this.a.x + ',' + this.a.y
+	    + ' ' + this.b.x + ',' + this.b.y;
+};
+
+/**
+ * Check if this segment is the continuation of another one
+ *
+ * @param segment {Segment}
+ * @return {bool}
+ */
+Segment.prototype.isContigueWith = function ( segment ) {
+	var a =    this.a,
+	    b =    this.b,
+	    c = segment.a,
+	    d = segment.b;
+	return a.equals( c ) || a.equals( d ) || b.equals( c ) || b.equals( d );
+};
+
+/**
+ * Does this segment intersect another segment?
+ *
+ * @return {bool}
+ * @see http://paulbourke.net/geometry/pointlineplane/
+ */
+Segment.prototype.getIntersection = function ( segment ) {
+	if( this.isContigueWith( segment ) ) {
+		return false;
+	}
+	var r = this, s = segment;
+	var x1 = r.a.x, y1 = r.a.y,
+		x2 = r.b.x, y2 = r.b.y,
+		x3 = s.a.x, y3 = s.a.y,
+		x4 = s.b.x, y4 = s.b.y;
+	var denominator = ( y4 - y3 ) * ( x2 - x1 )
+	                - ( x4 - x3 ) * ( y2 - y1 );
+	if( 0.0 !== denominator ) {
+		var ur = ( x4 - x3 ) * ( y1 - y3 )
+		       - ( y4 - y3 ) * ( x1 - x3 ),
+			us = ( x2 - x1 ) * ( y1 - y3 )
+			   - ( y2 - y1 ) * ( x1 - x3 );
+		ur /= denominator;
+		us /= denominator;
+		if( ur >= 0 && ur <= 1 && us >= 0 && us <= 1 ) {
+			return new Point(
+				x1 + ur * ( x2 - x1 ),
+				y1 + ur * ( y2 - y1 )
+			);
+		}
+	}
+	return false;
+};
+
+/**
+ * Get the length of this segment
+ *
+ * @return {float}
+ */
+Segment.prototype.getLength = function () {
+	return this.a.distanceFrom( this.b );
+};
+
+Segment.prototype.intersectsLine = function ( segment ) {
+	var a = this.a, b = this.b, c = segment.a, d = segment.b;
+    var a_dx = b.x - a.x;
+    var a_dy = b.y - a.y;
+    var b_dx = d.x - c.x;
+    var b_dy = d.y - c.y;
+	var denominator = -b_dx * a_dy + a_dx * b_dy;
+    var s = ( -a_dy * (a.x - c.x) + a_dx * (a.y - c.y) ) / denominator;
+    var t = ( +b_dx * (a.y - c.y) - b_dy * (a.x - c.x) ) / denominator;
+    return s >= 0 && s <= 1 && t >= 0 && t <= 1;
+};
+
+/**
+ * Create a segment collision (a segment with a point)
+ *
+ * @param segment {Segment}
+ * @param point {Point}
+ */
+function SegmentCollision ( segment, point ) {
+	this.segment   = segment;
+	this.collision = point;
+};
+
+/**
+ * Create a new triangle
+ *
+ * @param a {Point}
+ * @param b {Point}
+ * @param c {Point}
+ */
+function Triangle ( a, b, c ) {
+	this.a = a;
+	this.b = b;
+	this.c = c;
+};
+
+/**
+ * Get all the points
+ *
+ * @return {array}
+ */
+Triangle.prototype.getPoints = function () {
+	return [ this.a, this.b, this.c ];
+
+};
+
+/**
+ * Does this object has a certain point (in the perimeter)?
+ *
+ * @return {bool}
+ */
+Triangle.prototype.hasPoint = function ( p ) {
+	var points = this.getPoints();
+	for( var i = 0; i < points.length; i++ ) {
+		if( p.equals( points[ i ] ) ) {
+			return true;
+		}
+	}
+	return false;
+};
+
+/**
+ * SVG points attribute
+ *
+ * @param t {Triangle}
+ * @return {string}
+ */
+Triangle.prototype.getSVGPoints = function () {
+	return '' + this.a.x + ',' + this.a.y
+	    + ' ' + this.b.x + ',' + this.b.y
+	    + ' ' + this.c.x + ',' + this.c.y;
+};
+
+/**
+ * Get the segments (sides) of this triangle
+ *
+ * @return {array}
+ */
+Triangle.prototype.getSegments = function () {
+	if( undefined === this._segments ) {
+		this._segments = [
+			new Segment( this.a, this.b ),
+			new Segment( this.b, this.c ),
+			new Segment( this.c, this.a )
+		];
+	}
+	return this._segments;
+}
+
+/**
+ * Get the perimeter of this triangle
+ *
+ * @return {float}
+ */
+Triangle.prototype.getPerimeter = function () {
+	if( undefined === this._perimeter ) {
+		var segments = this.getSegments();
+		this._perimeter = segments.ab.getLength()
+			            + segments.bc.getLength()
+			            + segments.ca.getLength();
+	}
+	return this._perimeter;
+}
+
+/**
+ * Get the area of this triangle
+ *
+ * @see Heron's Formula
+ * @return {float}
+ */
+Triangle.prototype.getArea = function () {
+	if( undefined === this._area ) {
+		var p = this.getPerimeter() / 2;
+		this._area = Math.sqrt(
+			p * ( p - this.a.distanceFrom( this.b ) )
+				( p - this.b.distanceFrom( this.c ) )
+				( p - this.c.distanceFrom( this.a ) )
 		);
-	};
+	}
+	return this._area;
+}
 
-	/**
-	 * Get the distance from this point and another
-	 *
-	 * @param p {Point}
-	 * @return {float}
-	 */
-	Point.prototype.distanceFrom = function ( p ) {
-		var a = this.x - p.x;
-		var b = this.y - p.y;
-		return Math.sqrt( a * a + b * b );
-	};
+/**
+ * Get the segments of this triangles that were eventually intersected
+ * by another segment.
+ *
+ * @param segmentTest {Segment}
+ * @return {array}
+ */
+Triangle.prototype.getSegmentCollisions = function ( segmentTest ) {
+	var collisions = [];
+	var segments = this.getSegments();
+	for( var i = 0; i < segments.length; i++ ) {
+		var intersection = segmentTest.getIntersection( segments[ i ] );
+		if( intersection ) {
+			collisions.push( new SegmentCollision( segments[ i ], intersection ) );
+		}
+	}
+	return collisions;
+};
 
-	/**
-	 * Create a new segment from two points
-	 *
-	 * @param a {Point}
-	 * @param b {Point}
-	 */
-	function Segment ( a, b ) {
-		this.a = a;
-		this.b = b;
-	};
-
-	/**
-	 * SVG points attribute
-	 *
-	 * @return {string}
-	 */
-	Segment.prototype.getSVGPoints = function () {
-		return '' + this.a.x + ',' + this.a.y
-		    + ' ' + this.b.x + ',' + this.b.y;
-	};
-
-	/**
-	 * Check if this segment is the continuation of another one
-	 *
-	 * @param segment {Segment}
-	 * @return {bool}
-	 */
-	Segment.prototype.isContigueWith = function ( segment ) {
-		var a =    this.a,
-		    b =    this.b,
-		    c = segment.a,
-		    d = segment.b;
-		return a.equals( c ) || a.equals( d ) || b.equals( c ) || b.equals( d );
-	};
-
-	/**
-	 * Get a segment that can rappresent its bound
-	 *
-	 * In short words: A: bottom-left; B: top-right
-	 *
-	 * @return {Segment}
-	Segment.prototype.getMinMax = function () {
-		return new Segment(
-			new Point( Math.min( this.a.x, this.b.x ),	Math.min( this.a.y, this.b.y ) ),
-			new Point( Math.max( this.a.x, this.b.x ),	Math.max( this.a.y, this.b.y ) )
-		);
-	};
-	 */
-
-	/**
-	 * Does this segment intersect another segment?
-	 *
-	 * @return {bool}
-	 * @see http://paulbourke.net/geometry/pointlineplane/
-	 */
-	Segment.prototype.getIntersection = function ( segment ) {
-		if( this.isContigueWith( segment ) ) {
+/**
+ * Is this point inside this triangle?
+ *
+ * I use a simple math property: a point into a triangle can be
+ * connected to all the 3 points without intersecting any of the 3 segment.
+ *
+ * @param p {Point}
+ * @param mustBeInside {bool} set to true to does not consider a corner as valid
+ * @return {bool}
+ */
+Triangle.prototype.containsPoint = function ( p, mustBeInside ) {
+	var a = this.a, b = this.b, c = this.c;
+	if( p.x >= Math.min( a.x, b.x, c.x )
+	 && p.y >= Math.min( a.y, b.y, c.y )
+	 && p.x <= Math.max( a.x, b.x, c.x )
+	 && p.y <= Math.max( a.y, b.y, c.y )
+	) {
+		if( mustBeInside && this.hasPoint( p ) ) {
 			return false;
 		}
-		var r = this, s = segment;
-		var x1 = r.a.x, y1 = r.a.y,
-			x2 = r.b.x, y2 = r.b.y,
-			x3 = s.a.x, y3 = s.a.y,
-			x4 = s.b.x, y4 = s.b.y;
-		var denominator = ( y4 - y3 ) * ( x2 - x1 )
-		                - ( x4 - x3 ) * ( y2 - y1 );
-		if( 0.0 !== denominator ) {
-			var ur = ( x4 - x3 ) * ( y1 - y3 )
-			       - ( y4 - y3 ) * ( x1 - x3 );
-				us = ( x2 - x1 ) * ( y1 - y3 )
-				   - ( y2 - y1 ) * ( x1 - x3 );
-			ur /= denominator;
-			us /= denominator;
-			if( ur >= 0 && ur <= 1 && us >= 0 && us <= 1 ) {
-				return new Point(
-					x1 + ur * ( x2 - x1 ),
-					y1 + ur * ( y2 - y1 )
-				);
-			}
-		}
-		return false;
-	};
-
-	/**
-	 * Get the length of this segment
-	 *
-	 * @return {float}
-	 */
-	Segment.prototype.getLength = function () {
-		return this.a.distanceFrom( this.b );
-	}
-
-	/**
-	 * Create a segment collision (a segment with a point)
-	 *
-	 * @param segment {Segment}
-	 * @param point {Point}
-	 */
-	function SegmentCollision ( segment, point ) {
-		this.segment   = segment;
-		this.collision = point;
-	};
-
-	/**
-	 * Create a new triangle
-	 *
-	 * @param a {Point}
-	 * @param b {Point}
-	 * @param c {Point}
-	 */
-	function Triangle ( a, b, c ) {
-		this.a = a;
-		this.b = b;
-		this.c = c;
-	};
-
-	/**
-	 * SVG points attribute
-	 *
-	 * @param t {Triangle}
-	 * @return {string}
-	 */
-	Triangle.prototype.getSVGPoints = function () {
-		return '' + this.a.x + ',' + this.a.y
-		    + ' ' + this.b.x + ',' + this.b.y
-		    + ' ' + this.c.x + ',' + this.c.y;
-	};
-
-	/**
-	 * Get the segments (sides) of this triangle
-	 *
-	 * @return {array}
-	 */
-	Triangle.prototype.getSegments = function () {
-		if( undefined === this._segments ) {
-			this._segments = [
-				new Segment( this.a, this.b ),
-				new Segment( this.b, this.c ),
-				new Segment( this.c, this.a )
-			];
-		}
-		return this._segments;
-	}
-
-	/**
-	 * Get the perimeter of this triangle
-	 *
-	 * @return {float}
-	 */
-	Triangle.prototype.getPerimeter = function () {
-		if( undefined === this._perimeter ) {
-			var segments = this.getSegments();
-			this._perimeter = segments.ab.getLength()
-				            + segments.bc.getLength()
-				            + segments.ca.getLength();
-		}
-		return this._perimeter;
-	}
-
-	/**
-	 * Get the area of this triangle
-	 *
-	 * @see Heron's Formula
-	 * @return {float}
-	 */
-	Triangle.prototype.getArea = function () {
-		if( undefined === this._area ) {
-			var p = this.getPerimeter() / 2;
-			this._area = Math.sqrt(
-				p * ( p - this.a.distanceFrom( this.b ) )
-					( p - this.b.distanceFrom( this.c ) )
-					( p - this.c.distanceFrom( this.a ) )
-			);
-		}
-		return this._area;
-	}
-
-	/**
-	 * Get the segments of this triangles that were eventually intersected
-	 * by another segment.
-	 *
-	 * @param segment {Segment}
-	 * @return {array}
-	 */
-	Triangle.prototype.getSegmentCollisions = function ( segment ) {
-		var collisions = [];
 		var segments = this.getSegments();
-		for( var i = 0; i < segments.length; i++ ) {
-			var intersection = segment.getIntersection( segments[ i ] );
-			if( intersection ) {
-				collisions.push( new SegmentCollision( segments[ i ], intersection ) );
+		var points = this.getPoints();
+		for( var i = 0; i < points.length; i++ ) {
+			var point = points[ i ];
+			var p2p = new Segment( p, point ); // from the center to a triangle point
+			var segmentOpposed = new Segment(
+				points[ ( i + points.length - 1 ) % 3 ],
+				points[ ( i + 1                 ) % 3 ]
+			);
+			if( segmentOpposed.intersectsLine( p2p ) ) {
+				return false;
 			}
 		}
-		return collisions;
-	};
+		return true;
+	}
+	return false;
+};
 
-	/**
-	 * Is this triangle cutted by a segment?
-	 *
-	 * @param segment {Segment}
-	 * @return {bool}
-	 */
-	Triangle.prototype.isCuttedBySegment = function ( segment ) {
-		var segments = this.getSegments();
-		for( var i = 0; i < segments.length; i++ ) {
-			if( segment.intersects( segments[ i ] ) ) {
-				return true;
+/**
+ * Does this triangle contains another triangle?
+ *
+ * @param t {Triangle}
+ * @param mustBeInside {bool}
+ * @return bool
+ */
+Triangle.prototype.containsTriangle = function ( t, mustBeInside ) {
+	var points = t.getPoints();
+	for( var i = 0; i < points.length; i++ ) {
+		if( ! t.containsPoint( points[ i ], mustBeInside ) ) {
+			return false;
+		}
+	}
+	return true;
+};
+
+/**
+ * Rappresent a triangle with its segment collisions
+ *
+ * @param triangle {Triangle}
+ * @param segmentCollisions {array}
+ */
+function TriangleCollisions( triangle, segmentCollisions ) {
+	this.triangle = triangle;
+	this.segmentCollisions = segmentCollisions;
+};
+
+/**
+ * Filter an array of TriangleCollisions[] and get the nearest to a certain point
+ *
+ * @param trianglesCollisions {array}
+ * @param point {Point}
+ * @return {TriangleCollisions}
+ */
+TriangleCollisions.filterNearestToPoint = function ( trianglesCollisions, p ) {
+	var nearest, nearestDistance;
+	for( var i = 0; i < trianglesCollisions.length; i++ ) {
+		var triangleCollision = trianglesCollisions[ i ];
+		for( var j = 0; j < triangleCollision.segmentCollisions.length; j++ ) {
+			var segmentCollision = triangleCollision.segmentCollisions[ j ];
+			var distance = p.distanceFrom( segmentCollision.collision );
+			if( 0 === i && 0 === j || distance < nearestDistance ) {
+				nearest         = segmentCollision;
+				nearestDistance = distance;
 			}
 		}
+	}
+	return nearest;
+};
+
+/**
+ * Create a path
+ */
+function Path() {
+	this.points = [];
+};
+
+/**
+ * Filter some paths to pick the best of them
+ *
+ * @param paths {array}
+ * @return {false|Path}
+ */
+Path.filterBest = function ( paths ) {
+	var best = false, bestLength;
+	for( var i = 0; i < paths.length; i++ ) {
+		var path = paths[ i ];
+		if( path ) {
+			var length = path.getLength();
+			if( best === false || length < bestLength ) {
+				best = path;
+				bestLength = length;
+			}
+		}
+	}
+	return best;
+};
+
+/**
+ * Add a point to the path
+ *
+ * @param p {Point}
+ */
+Path.prototype.add = function ( p ) {
+	this.points.push( p );
+	return this;
+};
+
+/**
+ * Get the latest point of the path
+ *
+ * @return {Point}
+ */
+Path.prototype.getLastPoint = function () {
+	return this.points[ this.points.length - 1 ];
+};
+
+/**
+ * Get the length of this path
+ *
+ * @return {int}
+ */
+Path.prototype.getLength = function () {
+	var d = 0, last = this.points[ 0 ];
+	for( var i = 1; i < this.points.length; i++ ) {
+		var next = this.points[ i ];
+		d += last.distanceFrom( next );
+		last = next;
+	}
+	return d;
+};
+
+/**
+ * Clone this path
+ *
+ * @return {Path}
+ */
+Path.prototype.clone = function () {
+	var path = new Path();
+	for( var i = 0; i < this.points.length; i++ ) {
+		path.add( this.points[ i ] );
+	}
+	return path;
+};
+
+/**
+ * Is this point in the path?
+ *
+ * @param p {Point}
+ * @return {bool}
+ */
+Path.prototype.hasPoint = function ( p ) {
+	var points = this.points;
+	for( var i = 0; i < points.length; i++ ) {
+		if( p.equals( points[ i ] ) ) {
+			return true;
+		}
+	}
+	return false;
+};
+
+/**
+ * Get the solution
+ *
+ * @return {string|false}
+ */
+Path.prototype.getPrintableSolution = function () {
+	var s = '', points = this.points;
+	if( points.length > 1 ) {
+		s = '' + points.length + '\n';
+		for( var i = 0; i < points.length; i++ ) {
+			s += points[ i ].x + ' ' + points[ i ].y + '\n';
+		}
+	}
+	return false;
+};
+
+/**
+ * SVG points attribute
+ *
+ * @return string
+ */
+Path.prototype.getSVGPoints = function () {
+	var s = '', points = this.points;
+	for( var i = 0; i < points.length; i++ ) {
+		if( 0 !== i ) {
+			s += ' ';
+		}
+		s += points[ i ].x + ',' + points[ i ].y;
+	}
+	return s;
+};
+
+/**
+ * Instantiate the Path Finder
+ */
+function PathFinder ( start, target, obstacles, d3container ) {
+	this.obstacles = obstacles;
+	this.d3container = d3container;
+	this.target = target;
+	this.paths = [];
+	this.deadSteps = new Path();
+	this.running = false;
+	this.pause = false;
+	this.stack = [
+		new PathFinderStatus( target, ( new Path() ).add( start ) )
+	];
+};
+
+/**
+ * Push an element in the Path Finder stack
+ *
+ * @param status {PathFinderStatus}
+ */
+PathFinder.prototype.push = function ( status ) {
+	this.stack.push( status );
+};
+
+/**
+ * PathFinder stack status
+ *
+ * @param next {Point} The next point that we can try to add into the path
+ * @param path {Path} The path that have not to be touched
+ */
+function PathFinderStatus( next, path ) {
+	this.next = next;
+	this.path = path;
+};
+
+/**
+ * Run the path finder alghoritm
+ *
+ * @param onSolution {function}
+ */
+PathFinder.prototype.run = function ( onSolution ) {
+	var t = this;
+	this.interval = setInterval( function () {
+		t.step( onSolution );
+	}, 1 );
+};
+
+/**
+ * Do a single step
+ *
+ * @param onSolution {function}
+ */
+PathFinder.prototype.step = function ( onSolution ) {
+	if( this.running || this.pause ) {
+		return;
+	}
+	this.running = true;
+	if( this.stack.length ) {
+		var path = this.operate( this.stack.pop() );
+		if( path && path.hasPoint( this.target ) ) {
+			this.paths.push( path );
+		}
+	} else {
+		onSolution( Path.filterBest( this.paths ) );
+	}
+	this.running = false;
+};
+
+/**
+ * Set/unset pause
+ */
+PathFinder.prototype.togglePause = function () {
+	this.pause = ! this.pause;
+};
+
+/**
+ * @param status {PathFinderStatus}
+ * @return {Path}
+ */
+PathFinder.prototype.operate = function ( status ) {
+	var d3container = this.d3container.html( null );
+	var obstacles   = this.obstacles;
+	var target = this.target;
+	var next   = status.next;
+	var path   = status.path;
+
+	// don't go backward
+	if( path.hasPoint( next ) ) {
 		return false;
-	};
-
-	/**
-	 * Is this point inside this triangle?
-	 *
-	 * @param p {Point}
-	 * @return {bool}
-	 */
-	Triangle.prototype.containsPoint = function ( p ) {
-		var a = this.a, b = this.b, c = this.c;
-		if( p.x >= Math.min( a.x, b.x, c.x )
-		 && p.y >= Math.min( a.y, b.y, c.y )
-		 && p.x <= Math.max( a.x, b.x, c.x )
-		 && p.Y <= Math.max( a.y, b.y, c.y )
-		) {
-			return ! this.isCuttedBySegment( new Segment( p, a ) ) &&
-			       ! this.isCuttedBySegment( new Segment( p, b ) ) &&
-			       ! this.isCuttedBySegment( new Segment( p, c ) );
-		}
-		return false;
-	};
-
-	/**
-	 * Rappresent a triangle with its collision
-	 *
-	 * @param triangle {Triangle}
-	 * @param segmentCollisions {array}
-	 */
-	TriangleCollisions = function ( triangle, segmentCollisions ) {
-		this.triangle = triangle;
-		this.segmentCollisions = segmentCollisions;
-	};
-
-	/**
-	 * Calculate the distance between two points, avoiding the obstacles
-	 */
-	function distanceBetweenObstacles ( a, b, obstacles, d3container ) {
-		var segment = new Segment( a, b );
-
-		// plot path
-		d3container
-			.selectAll( '.path-finder' )
-			.data( [ segment ] )
-			.enter()
-				.append( 'polygon' )
-					.attr( 'class', 'path-finder' )
-					.attr( 'points', function ( s ) {
-						return s.getSVGPoints();
-					} );
-
-		var triangleCollisions = [];
-		for( var i = 0; i < obstacles.length; i++ ) {
-			var collidingSegments = obstacles[ i ].getSegmentCollisions( segment );
-			if( collidingSegments.length ) {
-				triangleCollisions.push( new TriangleCollisions( obstacles[ i ], collidingSegments ) );
-			}
-		}
-
-		// plot segment collisions
-		d3container
-			.selectAll( 'polygon' )
-			.data( triangleCollisions )
-			.enter()
-				.append( 'polygon' )
-					.attr( 'class', 'warn-fill' )
-					.attr( 'points', function ( triangleCollisions ) {
-						return triangleCollisions.triangle.getSVGPoints();
-					} )
-					.each( function ( triangleCollisions ) {
-						var parentNode = d3.select( this.parentNode )
-							.selectAll( 'g' )
-							.data( triangleCollisions.segmentCollisions )
-							.enter();
-
-							parentNode
-								.append( 'polygon' )
-									.attr( 'class', 'warn-stroke' )
-									.attr( 'points', function ( segmentCollision ) {
-										return segmentCollision.segment.getSVGPoints();
-									} );
-
-							parentNode
-								.append( 'circle' )
-									.attr( 'class', 'warn-stroke warn-fill' )
-									.attr( 'cx', function ( segmentCollision ) {
-										return segmentCollision.collision.x;
-									} )
-									.attr( 'cy', function ( segmentCollision ) {
-										return segmentCollision.collision.y;
-									} )
-									.attr( 'r', 10 );
-
-					} );
 	}
 
-	// specify the data file
-	var fileNumber = 1;
-	var fileName = 'input_' + fileNumber + '.txt';
-	var filePath = 'inputs/' + fileName;
-	var oReq = new XMLHttpRequest();
-	oReq.overrideMimeType('text/plain'); // file:/// bug
-	oReq.addEventListener( 'load', function () {
+	d3container.append( 'polygon' )
+		.attr( 'class', 'path-finder' )
+		.attr( 'points', function () {
+			return path.getSVGPoints();
+		} );
 
-		d3.select( 'textarea' ).text( this.responseText );
-
-		// parsing
-		var lines = this.responseText.split('\n');
-		var firstLine = lines[ 0 ].trim().split(' ');
-
-		// initialization
-		Data.from = Point.createFromString( firstLine[ 0 ], firstLine[ 1 ] );
-		Data.to   = Point.createFromString( firstLine[ 2 ], firstLine[ 3 ] );
-		Data.nObstacles = lines[ 1 ];
-		Data.obstacles = [];
-
-		// bounds
-		var minX = Math.min( Data.from.x, Data.to.x ),
-			maxX = Math.max( Data.from.x, Data.to.x ),
-			minY = Math.min( Data.from.y, Data.to.y ),
-			maxY = Math.max( Data.from.y, Data.to.y );
-
-		// obstacles
-		for( var i = 2; i < Data.nObstacles; i++ ) {
-			var coordinates = lines[ i ].trim().split(' ');
-			var a = Point.createFromString( coordinates[ 0 ], coordinates[ 1 ] ),
-				b = Point.createFromString( coordinates[ 2 ], coordinates[ 3 ] ),
-				c = Point.createFromString( coordinates[ 4 ], coordinates[ 5 ] );
-			minX = Math.min( minX, a.x, b.x, c.x );
-			maxX = Math.max( maxX, a.x, b.x, c.x );
-			minY = Math.min( minY, a.y, b.y, c.y );
-			maxY = Math.max( maxY, a.y, b.y, c.y );
-			Data.obstacles.push( new Triangle( a, b, c ) );
+	// check if the next point is inside an obstacle
+	var obstaclesContainingNext = [];
+	for( var i = 0; i < obstacles.length; i++ ) {
+		var obstacle = obstacles[ i ];
+		if( obstacle.containsPoint( next, true ) ) {
+			obstaclesContainingNext.push( obstacle );
 		}
+	}
 
-		// SVG
-		var svg = d3.select( 'svg' );
-		var container = svg.append( 'g' );
+	// try another next step (hoping to don't be into an obstacle)
+	if( obstaclesContainingNext.length ) {
+		console.log( next );
+		console.log( obstaclesContainingNext );
+		this.deadSteps.add( next );
+		for( var i = 0; i < obstaclesContainingNext.length; i++ ) {
+			var obstacle = obstacles[ i ];
+			d3container.append( 'polygon' )
+				.attr( 'class', 'collision warn-fill' )
+				.attr( 'points', function () {
+					return obstacle.getSVGPoints();
+				} );
+			var points = obstacle.getPoints();
+			for( var j = 0; j < points.length; j++ ) {
+				var point = points[ j ];
+				if( ! this.deadSteps.hasPoint( point ) ) {
+					this.push( new PathFinderStatus( point, path.clone() ) );
+				}
+			}
+		}
+		return false;
+	}
 
-		// zoom abilitation
-		container.call( d3.zoom().on('zoom', function () {
-			container.attr( 'transform', d3.event.transform );
-		} ) );
+	// this point has not collisions
+	path = path.add( next );	
 
-		// viewbox fitting the content bounds
-		var padding = 200;
-		svg.attr( 'viewBox', '' +
-				(          minX   - padding ) + ' ' +
-				(          minY   - padding ) + ' ' +
-				( ( maxX - minX ) + padding ) + ' ' +
-				( ( maxY - minY ) + padding )
-			);
+	// virtual segment next-target
+	var segment = new Segment( next, target );
+	d3container.append( 'polygon' )
+		.attr( 'class', 'path-finder warn-stroke' )
+		.attr( 'points', function () {
+			return segment.getSVGPoints();
+		} );
 
-		// obstacles
-		container.selectAll( '.obstacle' )
-			.data( Data.obstacles )
-			.enter()
-				.append( 'polygon' )
-					.attr( 'class', 'obstacle' )
-					.attr( 'points', function ( t ) {
-						return t.getSVGPoints();
-					} );
+	// virtual segment collisions
+	var trianglesCollisions = [];
+	for( var i = 0; i < obstacles.length; i++ ) {
+		var obstacle = obstacles[ i ];
+		var collidingSegments = obstacle.getSegmentCollisions( segment );
+		if( collidingSegments.length ) {
+			trianglesCollisions.push( new TriangleCollisions( obstacle, collidingSegments ) );
+		}
+	}
 
-		// initial A B points
-		container.selectAll( '.platform' )
+	// plot collisions
+	d3container.selectAll( '.collision' )
+		.data( trianglesCollisions )
+		.enter()
+			// plot triangles involved in collisions
+			.append( 'polygon' )
+				.attr( 'class', 'collision warn-fill' )
+				.attr( 'points', function ( trianglesCollisions ) {
+					return trianglesCollisions.triangle.getSVGPoints();
+				} )
+				.each( function ( triangleCollisions ) {
+					var parentNode = d3.select( this.parentNode )
+						.selectAll( 'g' )
+						.data( triangleCollisions.segmentCollisions )
+						.enter();
+						// plot triangle segments involved in collision
+						parentNode
+							.append( 'polygon' )
+								.attr( 'class', 'collision warn-stroke' )
+								.attr( 'points', function ( segmentCollision ) {
+									return segmentCollision.segment.getSVGPoints();
+								} );
+						// plot precise collision on triangle segments
+						parentNode
+							.append( 'circle' )
+								.attr( 'class', 'collision warn-stroke warn-fill' )
+								.attr( 'cx', function ( segmentCollision ) {
+									return segmentCollision.collision.x;
+								} )
+								.attr( 'cy', function ( segmentCollision ) {
+									return segmentCollision.collision.y;
+								} )
+								.attr( 'r', 10 );
+				} );
+	//\end plot collisions
+
+	// collisions check
+	if( trianglesCollisions.length ) {
+
+		// obtain the nearest
+		var nearest = TriangleCollisions.filterNearestToPoint( trianglesCollisions, next );
+
+		// chose one of the two next points
+		var next1 = nearest.segment.a,
+		    next2 = nearest.segment.b;
+
+		// divide et impera
+		this.push( new PathFinderStatus( next1, path.clone() ) );
+		this.push( new PathFinderStatus( next2, path.clone() ) );
+
+		// plot choices
+		d3container.selectAll( '.choice' )
 			.data( [
-				Data.from,
-				Data.to
+				next1,
+				next2
 			] )
 			.enter()
 				.append( 'circle' )
-					.attr( 'class', 'platform' )
+					.attr( 'class', 'choice' )
 					.attr( 'cx', function ( p ) {
 						return p.x;
 					} )
 					.attr( 'cy', function ( p ) {
 						return p.y;
 					} )
-					.attr( 'r', 100 );
+					.attr( 'r', 10 );	
+		//\end plot choices
 
-		var possible = true;
-		for( var i = 0; i < Data.obstacles.length; i++ ) {
-			var obstacle = Data.obstacles[ i ];
-			if( obstacle.containsPoint( Data.from ) || obstacle.containsPoint( Data.to ) ) {
-				possible = false;
-				break;
-			}
-		}
-		if( possible ) {
-			distanceBetweenObstacles(
-				Data.from,
-				Data.to,
-				Data.obstacles,
-				container
-					.append( 'g' )
-					.attr( 'class', 'temp' )
-			);
-		} else {
-			alert("impossible");
-		}
+		return false;
+	} else {
+		return path;
+	}
+};
+
+// textareas
+var $in  = d3.select( '#input' ),
+    $out = d3.select( '#output' );
+
+// specify the data file
+var fileNumber = 1,
+    fileName = 'input_' + fileNumber + '.txt',
+    filePath = 'inputs/' + fileName;
+
+// retrieve via AJAX
+var oReq = new XMLHttpRequest();
+oReq.overrideMimeType( 'text/plain' ); // added for a file:/// bug
+oReq.addEventListener( 'load', function () {
+
+	$in.text( this.responseText );
+
+	// parsing
+	var lines = this.responseText.split('\n');
+	var firstLine = lines[ 0 ].trim().split(' ');
+
+	// initialization
+	Data.from = Point.createFromString( firstLine[ 0 ], firstLine[ 1 ] );
+	Data.to   = Point.createFromString( firstLine[ 2 ], firstLine[ 3 ] );
+	Data.nObstacles = lines[ 1 ];
+	Data.obstacles = [];
+
+	// bounds
+	var minX = Math.min( Data.from.x, Data.to.x ),
+		maxX = Math.max( Data.from.x, Data.to.x ),
+		minY = Math.min( Data.from.y, Data.to.y ),
+		maxY = Math.max( Data.from.y, Data.to.y );
+
+	// obstacles
+	for( var i = 2; i < Data.nObstacles; i++ ) {
+		var coordinates = lines[ i ].trim().split(' ');
+		var a = Point.createFromString( coordinates[ 0 ], coordinates[ 1 ] ),
+			b = Point.createFromString( coordinates[ 2 ], coordinates[ 3 ] ),
+			c = Point.createFromString( coordinates[ 4 ], coordinates[ 5 ] );
+		minX = Math.min( minX, a.x, b.x, c.x );
+		maxX = Math.max( maxX, a.x, b.x, c.x );
+		minY = Math.min( minY, a.y, b.y, c.y );
+		maxY = Math.max( maxY, a.y, b.y, c.y );
+		Data.obstacles.push( new Triangle( a, b, c ) );
+	}
+
+	// remove duplicate obstacles
+	//Data.removeDuplicateObstacles();
+
+	// SVG
+	var svg = d3.select( 'svg' );
+	var container = svg.append( 'g' );
+
+	// zoom abilitation
+	container.call( d3.zoom().on('zoom', function () {
+		container.attr( 'transform', d3.event.transform );
+	} ) );
+
+	// viewbox fitting the content bounds
+	var padding = 200;
+	svg.attr( 'viewBox', '' +
+			(          minX   - padding ) + ' ' +
+			(          minY   - padding ) + ' ' +
+			( ( maxX - minX ) + padding ) + ' ' +
+			( ( maxY - minY ) + padding )
+		);
+
+	// plot triangles
+	container.append('g')
+		.selectAll( '.obstacle' )
+		.data( Data.obstacles )
+		.enter()
+			.append( 'polygon' )
+				.attr( 'class', 'obstacle' )
+				.attr( 'points', function ( t ) {
+					return t.getSVGPoints();
+				} );
+
+	// plot initial A B points
+	container.append('g')
+		.selectAll( '.platform' )
+		.data( [
+			Data.from,
+			Data.to
+		] )
+		.enter()
+			.append( 'circle' )
+				.attr( 'class', 'platform' )
+				.attr( 'cx', function ( p ) {
+					return p.x;
+				} )
+				.attr( 'cy', function ( p ) {
+					return p.y;
+				} )
+				.attr( 'r', 10 );
+
+	// debug canvas
+	var canvas = container.append( 'g' )
+		.attr( 'class', 'temp' );
+
+	// callback
+	function onSolution ( path ) {
+		$out.html( path && path.getPrintableSolution() || 'IMPOSSIBLE' );
+	};
+
+	var pathFinder = new PathFinder( Data.from, Data.to, Data.obstacles, canvas );
+
+	window.pathFinder = pathFinder;
+
+	d3.select( '#step' ).on( 'click', function () {
+		pathFinder.step( onSolution );
 	} );
-
-	// request the data
-	oReq.open( 'GET', filePath );
-	oReq.send();
+	d3.select( '#run' ).on( 'click', function () {
+		pathFinder.run( onSolution );
+	} );
+	d3.select( '#pause' ).on( 'click', function () {
+		pathFinder.togglePause();
+	} );
 } );
+
+// request the data
+oReq.open( 'GET', filePath );
+oReq.send();
 </script>
 </body>
 </html>
