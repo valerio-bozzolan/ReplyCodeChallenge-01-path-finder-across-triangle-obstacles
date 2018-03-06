@@ -32,6 +32,7 @@
 	svg .path-finder {
 		stroke: blue;
 		stroke-width:10;
+		fill:none; /* I've found an SVG nonsense? a default SVG polyline sometimes is black-filled. */
 	}
 </style>
 </head>
@@ -40,8 +41,8 @@
 <div id="controls">
 	<p>
 		<button id="run">run</button>
-		<button id="step">single step</button>
-		<button id="pause">toggle pause</button>
+		<button id="pause">pause</button>
+		<button id="step">1 step</button>
 	</p>
 	<p>
 		<textarea id="input"></textarea>
@@ -84,7 +85,7 @@ var Data = {
  * @param x float
  * @param y float
  */
-function Point ( x, y ) {
+function Point( x, y ) {
 	this.x = x;
 	this.y = y;
 };
@@ -132,7 +133,7 @@ Point.prototype.distanceFrom = function ( p ) {
  * @param a {Point}
  * @param b {Point}
  */
-function Segment ( a, b ) {
+function Segment( a, b ) {
 	this.a = a;
 	this.b = b;
 };
@@ -210,7 +211,7 @@ Segment.prototype.getLength = function () {
  * @param segment {Segment}
  * @param point {Point}
  */
-function SegmentCollision ( segment, point ) {
+function SegmentCollision( segment, point ) {
 	this.segment   = segment;
 	this.collision = point;
 };
@@ -222,7 +223,7 @@ function SegmentCollision ( segment, point ) {
  * @param b {Point}
  * @param c {Point}
  */
-function Triangle ( a, b, c ) {
+function Triangle( a, b, c ) {
 	this.a = a;
 	this.b = b;
 	this.c = c;
@@ -504,22 +505,6 @@ Path.prototype.hasPoint = function ( p ) {
 };
 
 /**
- * Get the solution
- *
- * @return {string|false}
- */
-Path.prototype.getPrintableSolution = function () {
-	var s = '', points = this.points;
-	if( points.length > 1 ) {
-		s = '' + points.length + '\n';
-		for( var i = 0; i < points.length; i++ ) {
-			s += points[ i ].x + ' ' + points[ i ].y + '\n';
-		}
-	}
-	return false;
-};
-
-/**
  * SVG points attribute
  *
  * @return string
@@ -537,27 +522,42 @@ Path.prototype.getSVGPoints = function () {
 
 /**
  * Instantiate the Path Finder
+ *
+ * @param start {Point} the very beginning point
+ * @param target {Point} the very ending point
+ * @param obstacles {array} obstacles in form of Triangle[]
+ * @param d3container {object} canvas
+ * @param onBetterSolution {function} called for each new solution
+ * @param onEndSolutions {function} called when no more solution can be retrieved
  */
-function PathFinder ( start, target, obstacles, d3container ) {
+function PathFinder ( start, target, obstacles, d3container, onSolution, onEndSolutions ) {
 	this.obstacles = obstacles;
 	this.d3container = d3container;
-	this.target = target;
-	this.paths = [];
 	this.deadSteps = new Path();
+	this.bestPath = false;
 	this.running = false;
-	this.pause = false;
-	this.stack = [
-		new PathFinderStatus( start, ( new Path() ) )
-	];
+	this.target = target;
+	this.onSolution = onSolution;
+	this.onEndSolutions = onEndSolutions || function () {};
+	this.stack = [];
+
+	// base case
+	if( ! this.isPointInObstacle( start ) && ! this.isPointInObstacle( target ) ) {
+		var path = new Path();
+		path.add( start );
+		this.push( new PathFinderStatus( target, path ) );
+	}
 };
 
 /**
- * Push an element in the Path Finder stack
+ * Push an element in the Path Finder stack (if it has sense)
  *
  * @param status {PathFinderStatus}
  */
 PathFinder.prototype.push = function ( status ) {
-	this.stack.push( status );
+	if( ! this.deadSteps.hasPoint( status.next ) ) {
+		this.stack.push( status );
+	}
 };
 
 /**
@@ -566,7 +566,7 @@ PathFinder.prototype.push = function ( status ) {
  * @param next {Point} The next point that we can try to add into the path
  * @param path {Path} The path that have not to be touched
  */
-function PathFinderStatus( next, path ) {
+function PathFinderStatus( next, path, whitelist ) {
 	this.next = next;
 	this.path = path;
 };
@@ -575,40 +575,100 @@ function PathFinderStatus( next, path ) {
  * Run the path finder alghoritm
  *
  * @param onSolution {function}
+ * @param ms {int} microseconds
  */
-PathFinder.prototype.run = function ( onSolution ) {
+PathFinder.prototype.run = function ( ms ) {
 	var t = this;
 	this.interval = setInterval( function () {
-		t.step( onSolution );
-	}, 1 );
+		t.step();
+	}, ms || 1 );
 };
 
 /**
  * Do a single step
  *
- * @param onSolution {function}
+ * @param doNotRespectPause {bool}
  */
-PathFinder.prototype.step = function ( onSolution ) {
-	if( this.running || this.pause ) {
+PathFinder.prototype.step = function () {
+	if( this.running ) {
 		return;
 	}
 	this.running = true;
 	if( this.stack.length ) {
 		var path = this.operate( this.stack.pop() );
-		if( path && path.hasPoint( this.target ) ) {
-			this.paths.push( path );
+		if( path ) {
+			var bestPath = Path.filterBest( [ this.bestPath, path ] );
+			if( bestPath !== this.bestPath ) {
+				this.onSolution( this.bestPath = bestPath );
+			}
 		}
 	} else {
-		onSolution( Path.filterBest( this.paths ) );
+		this.pause();
+		this.onEndSolutions( this.bestPath );
 	}
 	this.running = false;
 };
 
 /**
- * Set/unset pause
+ * Set pause
  */
-PathFinder.prototype.togglePause = function () {
-	this.pause = ! this.pause;
+PathFinder.prototype.pause = function () {
+	if( undefined !== this.interval ) {
+		clearInterval( this.interval );
+	}
+};
+
+/**
+ * Get the obstacles that contains a certain point
+ *
+ * @param p {Point}
+ * @return {array}
+ */
+PathFinder.prototype.getObstaclesContainingPoint = function ( p ) {
+	var obstaclesContainingNext = [];
+	var obstacles = this.obstacles;
+	for( var i = 0; i < obstacles.length; i++ ) {
+		var obstacle = obstacles[ i ];
+		if( obstacle.containsPoint( p ) && ! obstacle.hasPoint( p ) ) {
+			obstaclesContainingNext.push( obstacle );
+		}
+	}
+	return obstaclesContainingNext;
+};
+
+/**
+ * Is this point in an obstacle?
+ *
+ * @param p {Point}
+ * @param {bool}
+ */
+PathFinder.prototype.isPointInObstacle = function ( p ) {
+	var obstacles = this.obstacles;
+	for( var i = 0; i < obstacles.length; i++ ) {
+		var obstacle = obstacles[ i ];
+		if( obstacle.containsPoint( p ) && ! obstacle.hasPoint( p ) ) {
+			this.deadSteps.add( p );
+			return true;
+		}
+	}
+	return false;
+};
+
+/**
+ * @return {array} TriangleCollisions[]
+ */
+PathFinder.prototype.getObstaclesFromPointToPoint = function ( a, b ) {
+	var segment = new Segment( a, b );
+	var obstacles = this.obstacles;
+	var trianglesCollisions = [];
+	for( var i = 0; i < obstacles.length; i++ ) {
+		var obstacle = obstacles[ i ];
+		var collidingSegments = obstacle.getSegmentCollisions( segment );
+		if( collidingSegments.length ) {
+			trianglesCollisions.push( new TriangleCollisions( obstacle, collidingSegments ) );
+		}
+	}
+	return trianglesCollisions;
 };
 
 /**
@@ -618,14 +678,25 @@ PathFinder.prototype.togglePause = function () {
 PathFinder.prototype.operate = function ( status ) {
 	var d3container = this.d3container.html( null );
 	var obstacles   = this.obstacles;
-	var target = this.target;
-	var next   = status.next;
-	var path   = status.path;
 
-	console.log( "next:" );
+	// the followed secure path
+	var path = status.path;
+	console.log( 'current path:' );
+	console.log( path.points );
+	d3container.append( 'polyline' )
+		.attr( 'class', 'path-finder' )
+		.attr( 'points', function () {
+			return path.getSVGPoints();
+		} );
+
+	// the latest point of the path to be considered as start
+	var latest = path.getLastPoint();
+
+	// the candidate destination point to be considered as next
+	var next = status.next;
+	console.log( 'next:' );
 	console.log( next );
-
-	d3container.append( 'circle' )
+	d3container.append( 'circle' ) // next circle
 		.attr( 'class', 'choice' )
 		.attr( 'cx', function () {
 			return next.x;
@@ -634,155 +705,101 @@ PathFinder.prototype.operate = function ( status ) {
 			return next.y;
 		} )
 		.attr( 'r', 30 );
-
-	// don't go backward
-	if( path.hasPoint( next ) ) {
-		console.log( "don't go backward" );
-		return;
-	}
-
-	// check if the next point is inside an obstacle
-	var obstaclesContainingNext = [];
-	for( var i = 0; i < obstacles.length; i++ ) {
-		var obstacle = obstacles[ i ];
-		if( obstacle.containsPoint( next ) && ! obstacle.hasPoint( next ) ) {
-			obstaclesContainingNext.push( obstacle );
-		}
-	}
-
-	// try another next step (hoping to don't be into an obstacle)
-	if( obstaclesContainingNext.length ) {
-		console.log( "next is inside obstacles:" );
-		console.log( obstaclesContainingNext );
-		this.deadSteps.add( next );
-		for( var i = 0; i < obstaclesContainingNext.length; i++ ) {
-			var obstacle = obstacles[ i ];
-			d3container.append( 'polygon' )
-				.attr( 'class', 'collision warn-fill' )
-				.attr( 'points', function () {
-					return obstacle.getSVGPoints();
-				} );
-			var points = obstacle.getPoints();
-			for( var j = 0; j < points.length; j++ ) {
-				var point = points[ j ];
-				if( ! this.deadSteps.hasPoint( point ) ) {
-					this.push( new PathFinderStatus( point, path.clone() ) );
-				}
-			}
-		}
-		return;
-	}
-
-	// this point has not collisions
-	path = path.add( next );
-	d3container.append( 'polyline' )
-		.attr( 'class', 'path-finder' )
-		.attr( 'points', function () {
-			return path.getSVGPoints();
-		} );
-
-	console.log( "current path:" );
-	console.log( path );
-
-	// virtual segment next-target
-	var segment = new Segment( next, target );
-	d3container.append( 'polyline' )
+	d3container.append( 'polyline' ) // latest→next polyline
 		.attr( 'class', 'path-finder warn-stroke' )
 		.attr( 'points', function () {
-			return segment.getSVGPoints();
+			return ( new Segment( latest, next ) ).getSVGPoints();
 		} );
 
-	console.log("next→target:");
-	console.log( segment );
+	// don't turn back
+	if( path.hasPoint( next ) ) {
+		return false;
+	}
 
-	// virtual segment collisions
-	var trianglesCollisions = [];
-	for( var i = 0; i < obstacles.length; i++ ) {
-		var obstacle = obstacles[ i ];
-		var collidingSegments = obstacle.getSegmentCollisions( segment );
-		if( collidingSegments.length ) {
-			trianglesCollisions.push( new TriangleCollisions( obstacle, collidingSegments ) );
+	// is the next surrounded by an obstacle / many obstacles?
+	var nextArounds = this.getObstaclesContainingPoint( next )
+	if( nextArounds.length ) {
+		// mark as dead step
+		this.deadSteps.add( next );
+
+		// try to point to the corners
+		for( var i = 0; i < nextArounds.length; i++ ) {
+			var nexts = nextArounds[ i ].getPoints();
+			for( var j = 0; j < nexts.length; j++ ) {
+				this.push( new PathFinderStatus( nexts[ j ], path.clone() ) );	
+			}
 		}
+		return false;
 	}
 
-	console.log("next→target collisions:");
-	console.log( trianglesCollisions );
+	// find collision latest→next
+	var obstacleCollisions = this.getObstaclesFromPointToPoint( latest, next );
+	if( obstacleCollisions.length ) {
 
-	// plot collisions
-	d3container.selectAll( '.collision' )
-		.data( trianglesCollisions )
-		.enter()
-			// plot triangles involved in collisions
-			.append( 'polygon' )
-				.attr( 'class', 'collision warn-fill' )
-				.attr( 'points', function ( trianglesCollisions ) {
-					return trianglesCollisions.triangle.getSVGPoints();
-				} )
-				.each( function ( triangleCollisions ) {
-					var parentNode = d3.select( this.parentNode )
-						.selectAll( 'g' )
-						.data( triangleCollisions.segmentCollisions )
-						.enter();
-						// plot triangle's segments involved in collision
-						parentNode
-							.append( 'polyline' )
-								.attr( 'class', 'collision warn-stroke' )
-								.attr( 'points', function ( segmentCollision ) {
-									return segmentCollision.segment.getSVGPoints();
-								} );
-						// plot precise collision on triangle segments
-						parentNode
-							.append( 'circle' )
-								.attr( 'class', 'collision warn-stroke warn-fill' )
-								.attr( 'cx', function ( segmentCollision ) {
-									return segmentCollision.collision.x;
-								} )
-								.attr( 'cy', function ( segmentCollision ) {
-									return segmentCollision.collision.y;
-								} )
-								.attr( 'r', 10 );
-				} );
-	//\end plot collisions
+		// find the nearest obstacle collision from the latest point
+		var nearestObstacleCollision = TriangleCollisions.filterNearestToPoint( obstacleCollisions, latest );
 
-	// no collisions?
-	if( ! trianglesCollisions.length ) {
-		return path; // end
+		// try to escapes from the "left" and the "right" of that obstacle side
+		this.push( new PathFinderStatus( nearestObstacleCollision.segment.a, path.clone() ) );
+		this.push( new PathFinderStatus( nearestObstacleCollision.segment.b, path.clone() ) );
+		console.log( 'latest→next collisions:' );
+		console.log( nearestObstacleCollision );
+
+		d3container.selectAll( '.collision' )
+			.data( obstacleCollisions )
+			.enter()
+				.append( 'polygon' ) // plot triangles involved in collisions
+					.attr( 'class', 'collision warn-fill' )
+					.attr( 'points', function ( trianglesCollisions ) {
+						return trianglesCollisions.triangle.getSVGPoints();
+					} )
+					.each( function ( triangleCollisions ) {
+						var parentNode = d3.select( this.parentNode )
+							.selectAll( 'g' )
+							.data( triangleCollisions.segmentCollisions )
+							.enter();
+							parentNode
+								.append( 'polyline' ) // plot triangle's segments involved in collision
+									.attr( 'class', 'collision warn-stroke' )
+									.attr( 'points', function ( segmentCollision ) {
+										return segmentCollision.segment.getSVGPoints();
+									} );
+							parentNode
+								.append( 'circle' ) // plot precise collision on triangle segments
+									.attr( 'class', 'collision warn-stroke warn-fill' )
+									.attr( 'cx', function ( segmentCollision ) {
+										return segmentCollision.collision.x;
+									} )
+									.attr( 'cy', function ( segmentCollision ) {
+										return segmentCollision.collision.y;
+									} )
+									.attr( 'r', 10 );
+					} );
+		return false;
 	}
 
-	// find the nearest collision
-	var nearest = TriangleCollisions.filterNearestToPoint( trianglesCollisions, next );
+	// the next point has not collisions and can be used as next step
+	path.add( next );
+	console.log( 'next added to path' );
 
-	// chose one of the two next points
-	var next1 = nearest.segment.a,
-	    next2 = nearest.segment.b;
+	// reached the end?
+	if( next.equals( this.target ) ) {
+		return path; // here is the solution!
+	}
 
-	// divide et impera
-	this.push( new PathFinderStatus( next1, path.clone() ) );
-	this.push( new PathFinderStatus( next2, path.clone() ) );
+	// try to go to the target
+	this.push( new PathFinderStatus( this.target, path ) );
 
-	// plot nexts
-	d3container
-		.selectAll( '.nexts' )
-		.data( [ next1, next2 ] )
-		.enter()
-			.append( 'circle' )
-			.attr( 'class', 'nexts' )
-			.attr( 'cx', function ( p ) {
-				return p.x;
-			} )
-			.attr( 'cy', function ( p ) {
-				return p.y;
-			} )
-			.attr( 'r', 10 );
+	return false;
 };
 
 // textareas
-var $in  = d3.select( '#input' ),
+var $in  = d3.select( '#input'  ),
     $out = d3.select( '#output' );
 
 // specify the data file
 var fileNumber = 1,
-    fileName = 'input_' + fileNumber + '.txt',
+    fileName = 'input_'  + fileNumber + '.txt',
     filePath = 'inputs/' + fileName;
 
 // retrieve via AJAX
@@ -793,8 +810,8 @@ oReq.addEventListener( 'load', function () {
 	$in.text( this.responseText );
 
 	// parsing
-	var lines = this.responseText.split('\n');
-	var firstLine = lines[ 0 ].trim().split(' ');
+	var lines = this.responseText.split( '\n' );
+	var firstLine = lines[ 0 ].trim().split( ' ' );
 
 	// initialization
 	Data.from = Point.createFromString( firstLine[ 0 ], firstLine[ 1 ] );
@@ -875,23 +892,42 @@ oReq.addEventListener( 'load', function () {
 	var canvas = container.append( 'g' )
 		.attr( 'class', 'temp' );
 
-	// callback
-	function onSolution ( path ) {
-		$out.html( path && path.getPrintableSolution() || 'IMPOSSIBLE' );
+	function onSolution( path ) {
+		var s = '', points = path.points;
+		if( points.length > 1 ) {
+			s += points.length + '\n';
+			for( var i = 0; i < points.length; i++ ) {
+				s += points[ i ].x + ' ' + points[ i ].y + '\n';
+			}
+		}
+		if( s === '' ) {
+			s = 'IMPOSSIBLE';
+		}
+		$out.html( s );
 	};
 
-	var pathFinder = new PathFinder( Data.from, Data.to, Data.obstacles, canvas );
+	function onEndSolutions( path ) {
+		canvas.html( null ).append( 'polyline' )
+			.attr( 'class', 'path-finder' )
+			.attr( 'points', function () {
+				return path.getSVGPoints();
+			} );
+		alert( 'fine' );
+	};
 
+	var pathFinder = new PathFinder( Data.from, Data.to, Data.obstacles, canvas, onSolution, onEndSolutions );
+
+	// TODO: remove
 	window.pathFinder = pathFinder;
 
 	d3.select( '#step' ).on( 'click', function () {
-		pathFinder.step( onSolution );
+		pathFinder.step();
 	} );
 	d3.select( '#run' ).on( 'click', function () {
-		pathFinder.run( onSolution );
+		pathFinder.run();
 	} );
 	d3.select( '#pause' ).on( 'click', function () {
-		pathFinder.togglePause();
+		pathFinder.pause();
 	} );
 } );
 
