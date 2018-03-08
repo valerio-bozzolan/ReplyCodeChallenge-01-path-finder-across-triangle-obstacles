@@ -742,20 +742,32 @@ PathFinder.prototype.isPointInObstacle = function ( p ) {
 };
 
 /**
- * @return {array} TriangleCollisions[]
+ * Return all the segment collisions that intercur from the point a to the point b
+ *
+ * The segment collisions are ordered by the nearest from *a*
+ *
+ * @param a {Point}
+ * @param b {Point}
+ * @return {array} SegmentCollision[]
  */
-PathFinder.prototype.getObstaclesFromPointToPoint = function ( a, b ) {
+PathFinder.prototype.getSegmentCollisionsFromPointToPoint = function ( a, b ) {
 	var segment = new Segment( a, b );
 	var obstacles = this.obstacles;
-	var trianglesCollisions = [];
+	var segmentCollisions = [];
 	for( var i = 0; i < obstacles.length; i++ ) {
 		var obstacle = obstacles[ i ];
-		var collidingSegments = obstacle.getSegmentCollisions( segment );
-		if( collidingSegments.length ) {
-			trianglesCollisions.push( new TriangleCollisions( obstacle, collidingSegments ) );
+		var obstacleSegmentCollisions = obstacle.getSegmentCollisions( segment );
+		if( obstacleSegmentCollisions.length ) {
+			for( var j = 0; j < obstacleSegmentCollisions.length; j++ ) {
+				segmentCollisions.push( obstacleSegmentCollisions[ j ] );
+			}
 		}
 	}
-	return trianglesCollisions;
+	return segmentCollisions.sort( function ( aSegmentCollision, bSegmentCollision ) {
+		var aDistance = aSegmentCollision.collision.distanceFrom( a );
+		var bDistance = bSegmentCollision.collision.distanceFrom( a );
+		return aDistance > bDistance ? -1 : 1;
+	} );
 };
 
 /**
@@ -835,56 +847,30 @@ PathFinder.prototype.operate = function ( status ) {
 	}
 
 	// find collision latest→next
-	var obstacleCollisions = this.getObstaclesFromPointToPoint( latest, next );
-	if( obstacleCollisions.length ) {
+	var segmentCollisions = this.getSegmentCollisionsFromPointToPoint( latest, next );
+	if( segmentCollisions.length ) {
 
 		// find the nearest obstacle collision from the latest point
 		//var nearestObstacleCollision = TriangleCollisions.filterNearestToPoint( obstacleCollisions, latest );
-		for( var i = 0; i < obstacleCollisions.length; i++ ) {
-			var obstacleCollision = obstacleCollisions[ i ];
-			var segmentCollisions = obstacleCollision.segmentCollisions;
-			for( var j = 0; j < segmentCollisions.length; j++ ) {
-				var segmentCollision = segmentCollisions[ j ];
+		for( var i = 0; i < segmentCollisions.length; i++ ) {
+			var segmentCollision = segmentCollisions[ i ];
 
-				// try to escapes from the "left" and the "right" of that obstacle side
-				this.push( status.fork( segmentCollision.segment.a ) );	
-				this.push( status.fork( segmentCollision.segment.b ) );
-				console.log( 'latest→next collisions:' );
-				console.log( obstacleCollision );
-			}
+			// try to escapes from the "left" and the "right" of that obstacle side
+			this.push( status.fork( segmentCollision.segment.a ) );	
+			this.push( status.fork( segmentCollision.segment.b ) );
+
+			console.log( 'latest→next collisions:' );
+			console.log( segmentCollision );
 		}
 
 		d3container.selectAll( '.collision' )
-			.data( obstacleCollisions )
+			.data( segmentCollisions )
 			.enter()
-				.append( 'polygon' ) // plot triangles involved in collisions
-					.attr( 'class', 'collision warn-fill' )
-					.attr( 'points', function ( trianglesCollisions ) {
-						return trianglesCollisions.triangle.getSVGPoints();
-					} )
-					.each( function ( triangleCollisions ) {
-						var parentNode = d3.select( this.parentNode )
-							.selectAll( 'g' )
-							.data( triangleCollisions.segmentCollisions )
-							.enter();
-							parentNode
-								.append( 'polyline' ) // plot triangle's segments involved in collision
-									.attr( 'class', 'collision warn-stroke' )
-									.attr( 'points', function ( segmentCollision ) {
-										return segmentCollision.segment.getSVGPoints();
-									} );
-							parentNode
-								.append( 'circle' ) // plot precise collision on triangle segments
-									.attr( 'class', 'collision warn-stroke warn-fill' )
-									.attr( 'cx', function ( segmentCollision ) {
-										return segmentCollision.collision.x;
-									} )
-									.attr( 'cy', function ( segmentCollision ) {
-										return segmentCollision.collision.y;
-									} )
-									.attr( 'r', 10 );
+				.append( 'polyline' ) // plot triangle's segments involved in collision
+					.attr( 'class', 'collision warn-stroke' )
+					.attr( 'points', function ( segmentCollision ) {
+						return segmentCollision.segment.getSVGPoints();
 					} );
-
 		return;
 	}
 
