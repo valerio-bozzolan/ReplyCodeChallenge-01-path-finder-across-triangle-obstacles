@@ -1,8 +1,8 @@
-<!DOCTYPE html>
+																																														<!DOCTYPE html>
 <html>
 <head>
 <meta charset="UTF-8" />
-<title>Path finder across simple obscacles</title>
+<title>Path finder across simple obstacles</title>
 <style>
 	#controls {
 		position: fixed;
@@ -37,7 +37,7 @@
 </style>
 </head>
 <body>
-<h1>Path finder across simple obscacles</h1>
+<h1>Path finder across simple obstacles</h1>
 <div id="controls">
 	<p>
 		<button id="run">run</button>
@@ -505,6 +505,25 @@ Path.prototype.hasPoint = function ( p ) {
 };
 
 /**
+ * Is this path intersected by a segment?
+ *
+ * @param segment {Segment}
+ * @return {bool}
+ */
+Path.prototype.isIntersectedBySegment = function ( segment ) {
+	var points = this.points;
+	if( points.length > 1 ) {
+		for( var i = 1; i < points.length; i++ ) {
+			var part = new Segment( points[ i - 1 ], points[ i ] );
+			if( part.getIntersection( segment ) ) {
+				return true;
+			}
+		}
+	}
+	return false;
+};
+
+/**
  * SVG points attribute
  *
  * @return string
@@ -549,13 +568,53 @@ function PathFinder ( start, target, obstacles, d3container, onSolution, onEndSo
 	}
 };
 
+PathFinder.prototype.statusHasSense = function ( status ) {
+	// actual status
+	var next = status.next,
+	    path = status.path;
+
+	// the point before the next
+	var latest = path.getLastPoint();
+
+	// do not go on dead steps
+	if( this.deadSteps.hasPoint( next ) ) {
+		return false;
+	}
+
+	// do not go backward
+	if( path.hasPoint( next ) ) {
+		return false;
+	}
+
+	// don't go twice in the same direction
+	if( status.loopDetected() ) {
+		return false;
+	}
+
+	// follow a new path only if it's not longer than the best path
+	if( this.bestPath ) {
+		var hypoteticPath = status.path.clone().add( next );
+		if( hypoteticPath.getLength() > this.bestPath.getLength() ) {
+			return false;
+		}
+	}
+
+	// lastly but not leastly, the next segment must not intersect the old path
+	if( path.isIntersectedBySegment( new Segment( latest, next ) ) ) {
+		return false;
+	}
+
+	// yeeeh! much sense!
+	return true;
+};
+
 /**
- * Push an element in the Path Finder stack (if it has sense)
+ * Push an element in the Path Finder stack (only if it has sense)
  *
  * @param status {PathFinderStatus}
  */
 PathFinder.prototype.push = function ( status ) {
-	if( ! this.deadSteps.hasPoint( status.next ) ) {
+	if( this.statusHasSense( status ) ) {
 		this.stack.push( status );
 	}
 };
@@ -566,9 +625,29 @@ PathFinder.prototype.push = function ( status ) {
  * @param next {Point} The next point that we can try to add into the path
  * @param path {Path} The path that have not to be touched
  */
-function PathFinderStatus( next, path, whitelist ) {
+function PathFinderStatus( next, path, nextSeen ) {
 	this.next = next;
 	this.path = path;
+	this.nextSeen = nextSeen || [];
+};
+
+/**
+ * Fork the PathFinder status in a child
+ *
+ * @param next {Point} The next point that we can try to add into the path
+ * @return {PathFinderStatus}
+ */
+PathFinderStatus.prototype.fork = function ( next ) {
+	return new PathFinderStatus( next, this.path.clone(), this.nextSeen );
+}
+
+/**
+ * Loop detection
+ *
+ * @return {bool}
+ */
+PathFinderStatus.prototype.loopDetected = function () {
+	return -1 !== this.nextSeen.indexOf( this.next );
 };
 
 /**
@@ -586,8 +665,6 @@ PathFinder.prototype.run = function ( ms ) {
 
 /**
  * Do a single step
- *
- * @param doNotRespectPause {bool}
  */
 PathFinder.prototype.step = function () {
 	if( this.running ) {
@@ -598,12 +675,19 @@ PathFinder.prototype.step = function () {
 		var path = this.operate( this.stack.pop() );
 		if( path ) {
 			var bestPath = Path.filterBest( [ this.bestPath, path ] );
-			if( bestPath !== this.bestPath ) {
-				this.onSolution( this.bestPath = bestPath );
+			if( this.bestPath !== bestPath ) {
+				this.bestPath = bestPath;
+				this.onSolution( bestPath );
 			}
 		}
 	} else {
 		this.pause();
+
+		// if the solution is a non solution, must be fired once at least
+		if( ! this.bestPath ) {
+			this.onSolution( false );
+		}
+
 		this.onEndSolutions( this.bestPath );
 	}
 	this.running = false;
@@ -632,6 +716,9 @@ PathFinder.prototype.getObstaclesContainingPoint = function ( p ) {
 		if( obstacle.containsPoint( p ) && ! obstacle.hasPoint( p ) ) {
 			obstaclesContainingNext.push( obstacle );
 		}
+	}
+	if( obstaclesContainingNext.length ) {
+		this.deadSteps.add( p );
 	}
 	return obstaclesContainingNext;
 };
@@ -676,6 +763,11 @@ PathFinder.prototype.getObstaclesFromPointToPoint = function ( a, b ) {
  * @return {Path}
  */
 PathFinder.prototype.operate = function ( status ) {
+
+	if( ! this.statusHasSense( status ) ) {
+		return;
+	}
+
 	var d3container = this.d3container.html( null );
 	var obstacles   = this.obstacles;
 
@@ -689,11 +781,29 @@ PathFinder.prototype.operate = function ( status ) {
 			return path.getSVGPoints();
 		} );
 
+	d3container.append( 'g' )
+		.selectAll( '.platform' )
+		.data( path.points )
+		.enter()
+			.append( 'circle' )
+				.attr( 'class', 'platform' )
+				.attr( 'cx', function ( p ) {
+					return p.x;
+				} )
+				.attr( 'cy', function ( p ) {
+					return p.y;
+				} )
+				.attr( 'r', 5 );
+
 	// the latest point of the path to be considered as start
 	var latest = path.getLastPoint();
 
 	// the candidate destination point to be considered as next
 	var next = status.next;
+
+	// shared memory between forked statuses
+	status.nextSeen.push( next );
+ 
 	console.log( 'next:' );
 	console.log( next );
 	d3container.append( 'circle' ) // next circle
@@ -711,22 +821,14 @@ PathFinder.prototype.operate = function ( status ) {
 			return ( new Segment( latest, next ) ).getSVGPoints();
 		} );
 
-	// don't turn back
-	if( path.hasPoint( next ) ) {
-		return false;
-	}
-
 	// is the next surrounded by an obstacle / many obstacles?
 	var nextArounds = this.getObstaclesContainingPoint( next )
 	if( nextArounds.length ) {
-		// mark as dead step
-		this.deadSteps.add( next );
-
-		// try to point to the corners
 		for( var i = 0; i < nextArounds.length; i++ ) {
 			var nexts = nextArounds[ i ].getPoints();
 			for( var j = 0; j < nexts.length; j++ ) {
-				this.push( new PathFinderStatus( nexts[ j ], path.clone() ) );	
+				// attack the corners of these obstacles
+				this.push( status.fork( nexts[ j ] ) );	
 			}
 		}
 		return false;
@@ -737,13 +839,20 @@ PathFinder.prototype.operate = function ( status ) {
 	if( obstacleCollisions.length ) {
 
 		// find the nearest obstacle collision from the latest point
-		var nearestObstacleCollision = TriangleCollisions.filterNearestToPoint( obstacleCollisions, latest );
+		//var nearestObstacleCollision = TriangleCollisions.filterNearestToPoint( obstacleCollisions, latest );
+		for( var i = 0; i < obstacleCollisions.length; i++ ) {
+			var obstacleCollision = obstacleCollisions[ i ];
+			var segmentCollisions = obstacleCollision.segmentCollisions;
+			for( var j = 0; j < segmentCollisions.length; j++ ) {
+				var segmentCollision = segmentCollisions[ j ];
 
-		// try to escapes from the "left" and the "right" of that obstacle side
-		this.push( new PathFinderStatus( nearestObstacleCollision.segment.a, path.clone() ) );
-		this.push( new PathFinderStatus( nearestObstacleCollision.segment.b, path.clone() ) );
-		console.log( 'latest→next collisions:' );
-		console.log( nearestObstacleCollision );
+				// try to escapes from the "left" and the "right" of that obstacle side
+				this.push( status.fork( segmentCollision.segment.a ) );	
+				this.push( status.fork( segmentCollision.segment.b ) );
+				console.log( 'latest→next collisions:' );
+				console.log( obstacleCollision );
+			}
+		}
 
 		d3container.selectAll( '.collision' )
 			.data( obstacleCollisions )
@@ -775,7 +884,8 @@ PathFinder.prototype.operate = function ( status ) {
 									} )
 									.attr( 'r', 10 );
 					} );
-		return false;
+
+		return;
 	}
 
 	// the next point has not collisions and can be used as next step
@@ -784,13 +894,15 @@ PathFinder.prototype.operate = function ( status ) {
 
 	// reached the end?
 	if( next.equals( this.target ) ) {
-		return path; // here is the solution!
+		var bestPath = Path.filterBest( [ this.bestPath, path ] );
+		if( this.bestPath !== bestPath ) {
+			this.bestPath = bestPath;
+			this.onSolution( bestPath );
+		}
+	} else {
+		// try to go to the target
+		this.push( new PathFinderStatus( this.target, path.clone() ) );
 	}
-
-	// try to go to the target
-	this.push( new PathFinderStatus( this.target, path ) );
-
-	return false;
 };
 
 // textareas
@@ -798,7 +910,7 @@ var $in  = d3.select( '#input'  ),
     $out = d3.select( '#output' );
 
 // specify the data file
-var fileNumber = 1,
+var fileNumber = 3,
     fileName = 'input_'  + fileNumber + '.txt',
     filePath = 'inputs/' + fileName;
 
@@ -861,13 +973,31 @@ oReq.addEventListener( 'load', function () {
 
 	// plot triangles
 	container.append('g')
-		.selectAll( '.obstacle' )
+		.selectAll( 'polygon.obstacle' )
 		.data( Data.obstacles )
 		.enter()
 			.append( 'polygon' )
 				.attr( 'class', 'obstacle' )
 				.attr( 'points', function ( t ) {
 					return t.getSVGPoints();
+				} )
+				.each( function ( obstacle ) { // plot corners
+					return;
+					d3.select( this.parentNode )
+						.selectAll( 'circle.obstacle' )
+						.data( obstacle.getPoints() )
+						.enter()
+							.append( 'circle' )
+								.attr( 'class', '.obstacle' )
+								.attr( 'cx', function ( p ) {
+									return p.x;
+								} )
+								.attr( 'cy', function ( p ) {
+									return p.y;
+								} )
+								.attr( 'r', 5 );
+
+					
 				} );
 
 	// plot initial A B points
@@ -892,33 +1022,54 @@ oReq.addEventListener( 'load', function () {
 	var canvas = container.append( 'g' )
 		.attr( 'class', 'temp' );
 
-	function onSolution( path ) {
-		var s = '', points = path.points;
-		if( points.length > 1 ) {
-			s += points.length + '\n';
-			for( var i = 0; i < points.length; i++ ) {
-				s += points[ i ].x + ' ' + points[ i ].y + '\n';
+	var pathFinder = new PathFinder(
+		Data.from,
+		Data.to,
+		Data.obstacles,
+		canvas,
+		function ( path ) {
+			// on solution
+			var s = '';
+			if( path ) {
+				var points = path.points;
+				if( points.length > 1 ) {
+					s += points.length + '\n';
+					for( var i = 0; i < points.length; i++ ) {
+						s += points[ i ].x + ' ' + points[ i ].y + '\n';
+					}
+				}
+			} else {
+				s = 'IMPOSSIBLE';
 			}
+			$out.html( s );
+		}, function ( path ) {
+			console.log( 'final solution:' );
+			console.log( path );
+			if( path ) {
+				container.append( 'polyline' )
+					.attr( 'class', 'path-finder' )
+					.attr( 'points', function () {
+						return path.getSVGPoints();
+					} );
+
+				container.append( 'g' )
+					.selectAll( '.platform' )
+					.data( path.points )
+					.enter()
+						.append( 'circle' )
+							.attr( 'class', 'platform' )
+							.attr( 'cx', function ( p ) {
+								return p.x;
+							} )
+							.attr( 'cy', function ( p ) {
+								return p.y;
+							} )
+							.attr( 'r', 5 );
+			}
+			// on no solutions
+			alert( 'fine' );
 		}
-		if( s === '' ) {
-			s = 'IMPOSSIBLE';
-		}
-		$out.html( s );
-	};
-
-	function onEndSolutions( path ) {
-		canvas.html( null ).append( 'polyline' )
-			.attr( 'class', 'path-finder' )
-			.attr( 'points', function () {
-				return path.getSVGPoints();
-			} );
-		alert( 'fine' );
-	};
-
-	var pathFinder = new PathFinder( Data.from, Data.to, Data.obstacles, canvas, onSolution, onEndSolutions );
-
-	// TODO: remove
-	window.pathFinder = pathFinder;
+	);
 
 	d3.select( '#step' ).on( 'click', function () {
 		pathFinder.step();
@@ -929,6 +1080,9 @@ oReq.addEventListener( 'load', function () {
 	d3.select( '#pause' ).on( 'click', function () {
 		pathFinder.pause();
 	} );
+
+	// TODO: remove
+	window.pathFinder = pathFinder;
 } );
 
 // request the data
