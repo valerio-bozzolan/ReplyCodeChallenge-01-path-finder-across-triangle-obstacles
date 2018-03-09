@@ -43,6 +43,7 @@
 		<button id="run">run</button>
 		<button id="pause">pause</button>
 		<button id="step">1 step</button>
+		<button id="gui">toggle graphic</button>
 	</p>
 	<p>
 		<textarea id="input"></textarea>
@@ -554,17 +555,29 @@ function PathFinder ( start, target, obstacles, d3container, onSolution, onEndSo
 	this.d3container = d3container;
 	this.deadSteps = new Path();
 	this.bestPath = false;
-	this.running = false;
+	this.running = 0;
+	this.debug = false;
 	this.target = target;
 	this.onSolution = onSolution;
 	this.onEndSolutions = onEndSolutions || function () {};
+	this.intervals = [];
 	this.stack = [];
+	this.gui = false;
 
 	// base case
 	if( ! this.isPointInObstacle( start ) && ! this.isPointInObstacle( target ) ) {
 		var path = new Path();
 		path.add( start );
 		this.push( new PathFinderStatus( target, path ) );
+	}
+};
+
+/**
+ * @param msg {string}
+ */
+PathFinder.prototype.log = function ( msg ) {
+	if( this.debug ) {
+		console.log( msg );
 	}
 };
 
@@ -658,21 +671,21 @@ PathFinderStatus.prototype.loopDetected = function () {
  */
 PathFinder.prototype.run = function ( ms ) {
 	var t = this;
-	this.interval = setInterval( function () {
-		t.step();
-	}, ms || 1 );
+	this.intervals.push(
+		setInterval( function () {
+			t.step();
+		}, ms || 1 )
+	);
 };
 
 /**
  * Do a single step
  */
 PathFinder.prototype.step = function () {
-	if( this.running ) {
-		return;
-	}
-	this.running = true;
 	if( this.stack.length ) {
+		this.running++;
 		var path = this.operate( this.stack.pop() );
+		this.running--;
 		if( path ) {
 			var bestPath = Path.filterBest( [ this.bestPath, path ] );
 			if( this.bestPath !== bestPath ) {
@@ -680,7 +693,7 @@ PathFinder.prototype.step = function () {
 				this.onSolution( bestPath );
 			}
 		}
-	} else {
+	} else if( 0 === this.running ) {
 		this.pause();
 
 		// if the solution is a non solution, must be fired once at least
@@ -690,15 +703,14 @@ PathFinder.prototype.step = function () {
 
 		this.onEndSolutions( this.bestPath );
 	}
-	this.running = false;
 };
 
 /**
  * Set pause
  */
 PathFinder.prototype.pause = function () {
-	if( undefined !== this.interval ) {
-		clearInterval( this.interval );
+	while( this.intervals.length ) {
+		clearInterval( this.intervals.pop() );
 	}
 };
 
@@ -785,27 +797,31 @@ PathFinder.prototype.operate = function ( status ) {
 
 	// the followed secure path
 	var path = status.path;
-	console.log( 'current path:' );
-	console.log( path.points );
-	d3container.append( 'polyline' )
-		.attr( 'class', 'path-finder' )
-		.attr( 'points', function () {
-			return path.getSVGPoints();
-		} );
+	this.log( 'current path:' );
+	this.log( path.points );
 
-	d3container.append( 'g' )
-		.selectAll( '.platform' )
-		.data( path.points )
-		.enter()
-			.append( 'circle' )
-				.attr( 'class', 'platform' )
-				.attr( 'cx', function ( p ) {
-					return p.x;
-				} )
-				.attr( 'cy', function ( p ) {
-					return p.y;
-				} )
-				.attr( 'r', 5 );
+	if( this.gui ) {
+		d3container.append( 'polyline' )
+			.attr( 'class', 'path-finder' )
+			.attr( 'points', function () {
+				return path.getSVGPoints();
+			} );
+
+		d3container.append( 'g' )
+			.selectAll( '.platform' )
+			.data( path.points )
+			.enter()
+				.append( 'circle' )
+					.attr( 'class', 'platform' )
+					.attr( 'cx', function ( p ) {
+						return p.x;
+					} )
+					.attr( 'cy', function ( p ) {
+						return p.y;
+					} )
+					.attr( 'r', 5 );
+	}
+
 
 	// the latest point of the path to be considered as start
 	var latest = path.getLastPoint();
@@ -816,22 +832,25 @@ PathFinder.prototype.operate = function ( status ) {
 	// shared memory between forked statuses
 	status.nextSeen.push( next );
  
-	console.log( 'next:' );
-	console.log( next );
-	d3container.append( 'circle' ) // next circle
-		.attr( 'class', 'choice' )
-		.attr( 'cx', function () {
-			return next.x;
-		} )
-		.attr( 'cy', function () {
-			return next.y;
-		} )
-		.attr( 'r', 30 );
-	d3container.append( 'polyline' ) // latest→next polyline
-		.attr( 'class', 'path-finder warn-stroke' )
-		.attr( 'points', function () {
-			return ( new Segment( latest, next ) ).getSVGPoints();
-		} );
+	this.log( 'next:' );
+	this.log( next );
+
+	if( this.gui ) {
+		d3container.append( 'circle' ) // next circle
+			.attr( 'class', 'choice' )
+			.attr( 'cx', function () {
+				return next.x;
+			} )
+			.attr( 'cy', function () {
+				return next.y;
+			} )
+			.attr( 'r', 30 );
+		d3container.append( 'polyline' ) // latest→next polyline
+			.attr( 'class', 'path-finder warn-stroke' )
+			.attr( 'points', function () {
+				return ( new Segment( latest, next ) ).getSVGPoints();
+			} );
+	}
 
 	// is the next surrounded by an obstacle / many obstacles?
 	var nextArounds = this.getObstaclesContainingPoint( next )
@@ -859,24 +878,26 @@ PathFinder.prototype.operate = function ( status ) {
 			this.push( status.fork( segmentCollision.segment.a ) );	
 			this.push( status.fork( segmentCollision.segment.b ) );
 
-			console.log( 'latest→next collisions:' );
-			console.log( segmentCollision );
+			this.log( 'latest→next collisions:' );
+			this.log( segmentCollision );
 		}
 
-		d3container.selectAll( '.collision' )
-			.data( segmentCollisions )
-			.enter()
-				.append( 'polyline' ) // plot triangle's segments involved in collision
-					.attr( 'class', 'collision warn-stroke' )
-					.attr( 'points', function ( segmentCollision ) {
-						return segmentCollision.segment.getSVGPoints();
-					} );
+		if( this.gui ) {
+			d3container.selectAll( '.collision' )
+				.data( segmentCollisions )
+				.enter()
+					.append( 'polyline' ) // plot triangle's segments involved in collision
+						.attr( 'class', 'collision warn-stroke' )
+						.attr( 'points', function ( segmentCollision ) {
+							return segmentCollision.segment.getSVGPoints();
+						} );
+		}
 		return;
 	}
 
 	// the next point has not collisions and can be used as next step
 	path.add( next );
-	console.log( 'next added to path' );
+	this.log( 'next added to path' );
 
 	// reached the end?
 	if( next.equals( this.target ) ) {
@@ -905,6 +926,7 @@ var oReq = new XMLHttpRequest();
 oReq.overrideMimeType( 'text/plain' ); // added for a file:/// bug
 oReq.addEventListener( 'load', function () {
 
+	// original input file content
 	$in.text( this.responseText );
 
 	// parsing
@@ -958,7 +980,7 @@ oReq.addEventListener( 'load', function () {
 		);
 
 	// plot triangles
-	container.append('g')
+	container.append( 'g' )
 		.selectAll( 'polygon.obstacle' )
 		.data( Data.obstacles )
 		.enter()
@@ -982,12 +1004,10 @@ oReq.addEventListener( 'load', function () {
 									return p.y;
 								} )
 								.attr( 'r', 5 );
-
-					
 				} );
 
 	// plot initial A B points
-	container.append('g')
+	container.append( 'g' )
 		.selectAll( '.platform' )
 		.data( [
 			Data.from,
@@ -1007,6 +1027,8 @@ oReq.addEventListener( 'load', function () {
 	// debug canvas
 	var canvas = container.append( 'g' )
 		.attr( 'class', 'temp' );
+
+	var solution = container.append( 'g' );
 
 	var pathFinder = new PathFinder(
 		Data.from,
@@ -1029,16 +1051,18 @@ oReq.addEventListener( 'load', function () {
 			}
 			$out.html( s );
 		}, function ( path ) {
-			console.log( 'final solution:' );
-			console.log( path );
+			// on end solutions
+			solution.html( null );
+			this.log( 'final solution:' );
+			this.log( path );
 			if( path ) {
-				container.append( 'polyline' )
+				solution.append( 'polyline' )
 					.attr( 'class', 'path-finder' )
 					.attr( 'points', function () {
 						return path.getSVGPoints();
 					} );
 
-				container.append( 'g' )
+				solution.append( 'g' )
 					.selectAll( '.platform' )
 					.data( path.points )
 					.enter()
@@ -1053,7 +1077,7 @@ oReq.addEventListener( 'load', function () {
 							.attr( 'r', 5 );
 			}
 			// on no solutions
-			alert( 'fine' );
+			alert( 'end: ' + ( new Date() ) );
 		}
 	);
 
@@ -1065,6 +1089,9 @@ oReq.addEventListener( 'load', function () {
 	} );
 	d3.select( '#pause' ).on( 'click', function () {
 		pathFinder.pause();
+	} );
+	d3.select( '#gui' ).on( 'click', function () {
+		pathFinder.gui = ! pathFinder.gui;
 	} );
 
 	// TODO: remove
