@@ -40,7 +40,11 @@
 <h1>Path finder across simple obstacles</h1>
 <div id="controls">
 	<p>
+		<input type="number" id="n" min="1" max="4" value="1" />
+		<button id="load">load</button>
 		<button id="run">run</button>
+	</p>
+	<p>
 		<button id="pause">pause</button>
 		<button id="step">1 step</button>
 		<button id="gui">toggle graphic</button>
@@ -555,6 +559,7 @@ function PathFinder ( start, target, obstacles, d3container, onSolution, onEndSo
 	this.d3container = d3container;
 	this.deadSteps = new Path();
 	this.bestPath = false;
+	this.intersections = new Map();
 	this.running = 0;
 	this.debug = false;
 	this.target = target;
@@ -562,7 +567,7 @@ function PathFinder ( start, target, obstacles, d3container, onSolution, onEndSo
 	this.onEndSolutions = onEndSolutions || function () {};
 	this.intervals = [];
 	this.stack = [];
-	this.gui = false;
+	this.gui = true;
 
 	// base case
 	if( ! this.isPointInObstacle( start ) && ! this.isPointInObstacle( target ) ) {
@@ -604,12 +609,19 @@ PathFinder.prototype.statusHasSense = function ( status ) {
 		return false;
 	}
 
-	// follow a new path only if it's not longer than the best path
-	if( this.bestPath ) {
-		var hypoteticPath = status.path.clone().add( next );
-		if( hypoteticPath.getLength() > this.bestPath.getLength() ) {
-			return false;
-		}
+	// the next path
+	var hypoteticPath = status.path.clone().add( next );
+	var hypoteticPathLength = hypoteticPath.getLength();
+
+	// do not follow a path if it's partially longer than the best partially path
+	var nextIntersectionMinimumDistance = this.intersections.get( next );
+	if( nextIntersectionMinimumDistance && hypoteticPathLength > nextIntersectionMinimumDistance ) {
+		return false;
+	}
+
+	// follow a new path only if it's not longer than the best complete path
+	if( this.bestPath && hypoteticPath.getLength() > this.bestPath.getLength() ) {
+		return false;
 	}
 
 	// lastly but not leastly, the next segment must not intersect the old path
@@ -899,8 +911,19 @@ PathFinder.prototype.operate = function ( status ) {
 	path.add( next );
 	this.log( 'next added to path' );
 
+	var pathLength = path.getLength();
+	var nextIntersectionMinimumDistance = this.intersections.get( next );
+	if( undefined === nextIntersectionMinimumDistance || pathLength < nextIntersectionMinimumDistance ) {
+		// remember this good partial path length until this point
+		this.intersections.set( next, pathLength );
+	} else if( pathLength > nextIntersectionMinimumDistance ) {
+		// this partial path is too long
+		return false;
+	}
+
 	// reached the end?
 	if( next.equals( this.target ) ) {
+		d3container.html( null );
 		var bestPath = Path.filterBest( [ this.bestPath, path ] );
 		if( this.bestPath !== bestPath ) {
 			this.bestPath = bestPath;
@@ -914,89 +937,146 @@ PathFinder.prototype.operate = function ( status ) {
 
 // textareas
 var $in  = d3.select( '#input'  ),
-    $out = d3.select( '#output' );
+    $out = d3.select( '#output' ),
+	$n   = d3.select( '#n'      );
 
-// specify the data file
-var fileNumber = 3,
-    fileName = 'input_'  + fileNumber + '.txt',
-    filePath = 'inputs/' + fileName;
+d3.select( '#load' ).on( 'click', function () {
 
-// retrieve via AJAX
-var oReq = new XMLHttpRequest();
-oReq.overrideMimeType( 'text/plain' ); // added for a file:/// bug
-oReq.addEventListener( 'load', function () {
+	// specify the data file
+	var fileNumber = $n.property( 'value' ),
+	    fileName = 'input_'  + fileNumber + '.txt',
+	    filePath = 'inputs/' + fileName;
 
-	// original input file content
-	$in.text( this.responseText );
+	// retrieve via AJAX
+	var oReq = new XMLHttpRequest();
+	oReq.overrideMimeType( 'text/plain' ); // added for a file:/// bug
+	oReq.addEventListener( 'load', function () {
 
-	// parsing
-	var lines = this.responseText.split( '\n' );
-	var firstLine = lines[ 0 ].trim().split( ' ' );
+		// original input file content
+		$in.text( this.responseText );
 
-	// initialization
-	Data.from = Point.createFromString( firstLine[ 0 ], firstLine[ 1 ] );
-	Data.to   = Point.createFromString( firstLine[ 2 ], firstLine[ 3 ] );
-	Data.nObstacles = lines[ 1 ];
-	Data.obstacles = [];
+		// parsing
+		var lines = this.responseText.split( '\n' );
+		var firstLine = lines[ 0 ].trim().split( ' ' );
 
-	// bounds
-	var minX = Math.min( Data.from.x, Data.to.x ),
-		maxX = Math.max( Data.from.x, Data.to.x ),
-		minY = Math.min( Data.from.y, Data.to.y ),
-		maxY = Math.max( Data.from.y, Data.to.y );
+		// initialization
+		Data.from = Point.createFromString( firstLine[ 0 ], firstLine[ 1 ] );
+		Data.to   = Point.createFromString( firstLine[ 2 ], firstLine[ 3 ] );
+		Data.nObstacles = lines[ 1 ];
+		Data.obstacles = [];
 
-	// obstacles
-	for( var i = 2; i < Data.nObstacles; i++ ) {
-		var coordinates = lines[ i ].trim().split(' ');
-		var a = Point.createFromString( coordinates[ 0 ], coordinates[ 1 ] ),
-			b = Point.createFromString( coordinates[ 2 ], coordinates[ 3 ] ),
-			c = Point.createFromString( coordinates[ 4 ], coordinates[ 5 ] );
-		minX = Math.min( minX, a.x, b.x, c.x );
-		maxX = Math.max( maxX, a.x, b.x, c.x );
-		minY = Math.min( minY, a.y, b.y, c.y );
-		maxY = Math.max( maxY, a.y, b.y, c.y );
-		Data.obstacles.push( new Triangle( a, b, c ) );
-	}
+		// bounds
+		var minX = Math.min( Data.from.x, Data.to.x ),
+			maxX = Math.max( Data.from.x, Data.to.x ),
+			minY = Math.min( Data.from.y, Data.to.y ),
+			maxY = Math.max( Data.from.y, Data.to.y );
 
-	// remove duplicate obstacles
-	//Data.removeDuplicateObstacles();
+		// obstacles
+		for( var i = 2; i < Data.nObstacles; i++ ) {
+			var coordinates = lines[ i ].trim().split(' ');
+			var a = Point.createFromString( coordinates[ 0 ], coordinates[ 1 ] ),
+				b = Point.createFromString( coordinates[ 2 ], coordinates[ 3 ] ),
+				c = Point.createFromString( coordinates[ 4 ], coordinates[ 5 ] );
+			minX = Math.min( minX, a.x, b.x, c.x );
+			maxX = Math.max( maxX, a.x, b.x, c.x );
+			minY = Math.min( minY, a.y, b.y, c.y );
+			maxY = Math.max( maxY, a.y, b.y, c.y );
+			Data.obstacles.push( new Triangle( a, b, c ) );
+		}
 
-	// SVG
-	var svg = d3.select( 'svg' );
-	var container = svg.append( 'g' );
+		// remove duplicate obstacles
+		//Data.removeDuplicateObstacles();
 
-	// zoom abilitation
-	container.call( d3.zoom().on('zoom', function () {
-		container.attr( 'transform', d3.event.transform );
-	} ) );
+		// SVG
+		var svg = d3.select( 'svg' ).html( null );
+		var container = svg.append( 'g' );
 
-	// viewbox fitting the content bounds
-	var padding = 200;
-	svg.attr( 'viewBox', '' +
-			(          minX   - padding ) + ' ' +
-			(          minY   - padding ) + ' ' +
-			( ( maxX - minX ) + padding ) + ' ' +
-			( ( maxY - minY ) + padding )
-		);
+		// zoom abilitation
+		container.call( d3.zoom().on('zoom', function () {
+			container.attr( 'transform', d3.event.transform );
+		} ) );
 
-	// plot triangles
-	container.append( 'g' )
-		.selectAll( 'polygon.obstacle' )
-		.data( Data.obstacles )
-		.enter()
-			.append( 'polygon' )
-				.attr( 'class', 'obstacle' )
-				.attr( 'points', function ( t ) {
-					return t.getSVGPoints();
-				} )
-				.each( function ( obstacle ) { // plot corners
-					return;
-					d3.select( this.parentNode )
-						.selectAll( 'circle.obstacle' )
-						.data( obstacle.getPoints() )
+		// viewbox fitting the content bounds
+		var padding = 200;
+		svg.attr( 'viewBox', '' +
+				(          minX   - padding ) + ' ' +
+				(          minY   - padding ) + ' ' +
+				( ( maxX - minX ) + padding ) + ' ' +
+				( ( maxY - minY ) + padding )
+			);
+
+		// plot triangles
+		container.append( 'g' )
+			.selectAll( 'polygon.obstacle' )
+			.data( Data.obstacles )
+			.enter()
+				.append( 'polygon' )
+					.attr( 'class', 'obstacle' )
+					.attr( 'points', function ( t ) {
+						return t.getSVGPoints();
+					} );
+
+		// plot initial A B points
+		container.append( 'g' )
+			.selectAll( '.platform' )
+			.data( [
+				Data.from,
+				Data.to
+			] )
+			.enter()
+				.append( 'circle' )
+					.attr( 'class', 'platform' )
+					.attr( 'cx', function ( p ) {
+						return p.x;
+					} )
+					.attr( 'cy', function ( p ) {
+						return p.y;
+					} )
+					.attr( 'r', 10 );
+
+		// debug canvas
+		var canvas = container.append( 'g' )
+			.attr( 'class', 'temp' );
+
+		var solution = container.append( 'g' );
+
+		var pathFinder = new PathFinder(
+			Data.from,
+			Data.to,
+			Data.obstacles,
+			canvas,
+			function ( path ) {
+				// on solution
+				var s = '';
+				if( path ) {
+					var points = path.points;
+					if( points.length > 1 ) {
+						s += points.length + '\n';
+						for( var i = 0; i < points.length; i++ ) {
+							s += points[ i ].x + ' ' + points[ i ].y + '\n';
+						}
+					}
+				} else {
+					s = 'IMPOSSIBLE';
+				}
+				$out.html( s );
+			}, function ( path ) {
+				// on end solutions
+				this.log( 'final solution:' );
+				this.log( path );
+				if( path ) {
+					solution.append( 'polyline' )
+						.attr( 'class', 'path-finder' )
+						.attr( 'points', function () {
+							return path.getSVGPoints();
+						} );
+
+					solution.append( 'g' )
+						.selectAll( '.platform' )
+						.data( path.points )
 						.enter()
 							.append( 'circle' )
-								.attr( 'class', '.obstacle' )
+								.attr( 'class', 'platform' )
 								.attr( 'cx', function ( p ) {
 									return p.x;
 								} )
@@ -1004,103 +1084,33 @@ oReq.addEventListener( 'load', function () {
 									return p.y;
 								} )
 								.attr( 'r', 5 );
-				} );
-
-	// plot initial A B points
-	container.append( 'g' )
-		.selectAll( '.platform' )
-		.data( [
-			Data.from,
-			Data.to
-		] )
-		.enter()
-			.append( 'circle' )
-				.attr( 'class', 'platform' )
-				.attr( 'cx', function ( p ) {
-					return p.x;
-				} )
-				.attr( 'cy', function ( p ) {
-					return p.y;
-				} )
-				.attr( 'r', 10 );
-
-	// debug canvas
-	var canvas = container.append( 'g' )
-		.attr( 'class', 'temp' );
-
-	var solution = container.append( 'g' );
-
-	var pathFinder = new PathFinder(
-		Data.from,
-		Data.to,
-		Data.obstacles,
-		canvas,
-		function ( path ) {
-			// on solution
-			var s = '';
-			if( path ) {
-				var points = path.points;
-				if( points.length > 1 ) {
-					s += points.length + '\n';
-					for( var i = 0; i < points.length; i++ ) {
-						s += points[ i ].x + ' ' + points[ i ].y + '\n';
-					}
 				}
-			} else {
-				s = 'IMPOSSIBLE';
+				// on no solutions
+				alert( 'end: ' + ( new Date() ) );
 			}
-			$out.html( s );
-		}, function ( path ) {
-			// on end solutions
-			solution.html( null );
-			this.log( 'final solution:' );
-			this.log( path );
-			if( path ) {
-				solution.append( 'polyline' )
-					.attr( 'class', 'path-finder' )
-					.attr( 'points', function () {
-						return path.getSVGPoints();
-					} );
+		);
 
-				solution.append( 'g' )
-					.selectAll( '.platform' )
-					.data( path.points )
-					.enter()
-						.append( 'circle' )
-							.attr( 'class', 'platform' )
-							.attr( 'cx', function ( p ) {
-								return p.x;
-							} )
-							.attr( 'cy', function ( p ) {
-								return p.y;
-							} )
-							.attr( 'r', 5 );
-			}
-			// on no solutions
-			alert( 'end: ' + ( new Date() ) );
-		}
-	);
+		d3.select( '#step' ).on( 'click', function () {
+			pathFinder.step();
+		} );
+		d3.select( '#run' ).on( 'click', function () {
+			pathFinder.run();
+		} );
+		d3.select( '#pause' ).on( 'click', function () {
+			pathFinder.pause();
+		} );
+		d3.select( '#gui' ).on( 'click', function () {
+			pathFinder.gui = ! pathFinder.gui;
+		} );
 
-	d3.select( '#step' ).on( 'click', function () {
-		pathFinder.step();
-	} );
-	d3.select( '#run' ).on( 'click', function () {
-		pathFinder.run();
-	} );
-	d3.select( '#pause' ).on( 'click', function () {
-		pathFinder.pause();
-	} );
-	d3.select( '#gui' ).on( 'click', function () {
-		pathFinder.gui = ! pathFinder.gui;
+		// TODO: remove
+		window.pathFinder = pathFinder;
 	} );
 
-	// TODO: remove
-	window.pathFinder = pathFinder;
+	// request the data
+	oReq.open( 'GET', filePath );
+	oReq.send();
 } );
-
-// request the data
-oReq.open( 'GET', filePath );
-oReq.send();
 </script>
 </body>
 </html>
